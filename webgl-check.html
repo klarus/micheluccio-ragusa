@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Test grafico WebGL</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #14171c; color: #eee;
+    display: flex; min-height: 100vh; align-items: center; justify-content: center; margin: 0; }
+  main { max-width: 680px; padding: 24px; }
+  code { color: #9fd3ff; word-break: break-all; }
+  .ok { color: #7ee787; font-weight: 700; }
+  .no { color: #ff7b72; font-weight: 700; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Test grafico del browser</h1>
+  <div id="out">analisi in corso…</div>
+  <p>Puoi chiudere questa pagina: il risultato viene riportato automaticamente.</p>
+</main>
+<script>
+(function () {
+  var info = { ua: navigator.userAgent };
+  function probe(name) {
+    var c = document.createElement('canvas');
+    var gl = c.getContext(name, { failIfMajorPerformanceCaveat: false });
+    if (!gl) return null;
+    var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  }
+  try { info.webgl2 = probe('webgl2'); } catch (e) { info.webgl2 = 'errore: ' + e.message; }
+  try { info.webgl1 = probe('webgl') || probe('experimental-webgl'); } catch (e) { info.webgl1 = 'errore: ' + e.message; }
+
+  var out = document.getElementById('out');
+  out.innerHTML =
+    '<p>WebGL2: ' + (info.webgl2 ? '<span class="ok">SÌ</span>' : '<span class="no">NO</span>') + '</p>' +
+    '<p>WebGL1: ' + (info.webgl1 ? '<span class="ok">SÌ</span>' : '<span class="no">NO</span>') + '</p>' +
+    '<p>GPU (webgl2): <code>' + info.webgl2 + '</code></p>' +
+    '<p>GPU (webgl1): <code>' + info.webgl1 + '</code></p>' +
+    '<p>Browser: <code>' + info.ua + '</code></p>';
+
+  fetch('/__webgl-report?r=' + encodeURIComponent(JSON.stringify(info))).catch(function () {});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Micheluccio — Giri in centro (Ragusa 3D)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f12;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; }
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; }
+  #title { position: absolute; top: 14px; left: 18px; font-size: 14px; letter-spacing: 2px;
+    opacity: .85; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  #title b { color: #ff3b30; }
+  #speed { position: absolute; right: 24px; bottom: 20px; text-align: right;
+    text-shadow: 0 2px 6px rgba(0,0,0,.7); }
+  #speed .num { font-size: 56px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  #speed .unit { font-size: 14px; opacity: .7; }
+  #minimap { position: absolute; left: 18px; bottom: 18px;
+    border: 2px solid rgba(255,255,255,.25); border-radius: 10px; background: #20242a; }
+  #help { position: absolute; top: 14px; right: 18px; font-size: 12px; opacity: .75;
+    text-align: right; line-height: 1.7; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  #overlay { position: fixed; inset: 0; background: rgba(8,10,14,.88); display: flex;
+    flex-direction: column; align-items: center; justify-content: center; color: #fff;
+    cursor: pointer; transition: opacity .4s; text-align: center; padding: 0 20px; }
+  #overlay h1 { font-size: 64px; margin: 0; color: #e10600; letter-spacing: 4px; font-style: italic; }
+  #overlay .keys { font-size: 14px; line-height: 2; opacity: .85; margin-top: 30px;
+    background: rgba(255,255,255,.06); padding: 14px 28px; border-radius: 12px; }
+  #overlay .keys b { color: #ffd60a; }
+  #overlay .go { margin-top: 26px; font-size: 16px; color: #ffd60a; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #overlay-msg { margin-top: 14px; font-size: 13px; color: #9fd3ff; }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="title"><b>MICHELUCCIO</b> · RAGUSA CENTRO</div>
+  <div id="speed"><span class="num">0</span> <span class="unit">km/h</span></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="help">
+    W/↑ accelera · S/↓ frena<br>
+    A/D sterza · SPAZIO freno a mano<br>
+    C camera · M audio · R riparti<br>
+    <span style="opacity:.6">mappa © OpenStreetMap contributors</span>
+  </div>
+</div>
+<div id="overlay">
+  <h1>MICHELUCCIO</h1>
+  <div class="keys">
+    <b>W / ↑</b> accelera &nbsp;·&nbsp; <b>S / ↓</b> frena &nbsp;·&nbsp; <b>A / D</b> sterza<br>
+    <b>SPAZIO</b> freno a mano &nbsp;·&nbsp; <b>C</b> cambia camera &nbsp;·&nbsp; <b>M</b> audio &nbsp;·&nbsp; <b>R</b> riparti
+  </div>
+  <div class="go">PREMI UN TASTO O CLICCA PER PARTIRE</div>
+  <div id="overlay-msg">caricamento della città…</div>
+</div>
+<script>
+  // mostra nella schermata di avvio qualunque errore (anche dai moduli ES)
+  function mostraErrore(testo) {
+    var el = document.getElementById('overlay-msg');
+    if (el && !el.dataset.final) { el.dataset.final = '1'; el.textContent = testo; }
+  }
+  window.addEventListener('error', function (e) {
+    mostraErrore('Errore: ' + (e.message || e.type) +
+      (e.filename ? ' — ' + e.filename.split('/').pop() + ':' + e.lineno : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    mostraErrore('Errore: ' + ((e.reason && e.reason.message) || e.reason || 'caricamento fallito'));
+  });
+</script>
+<script type="module" src="js/main.js?v=2"></script>
+</body>
+</html>

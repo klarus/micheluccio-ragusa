@@ -1,0 +1,11 @@
+{
+  "name": "micheluccio-ragusa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Micheluccio gira in Ducati per il centro di Ragusa — prototipo 3D da browser",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node tools/smoke.mjs"
+  }
+}
