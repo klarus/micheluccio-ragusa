@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<title>Micheluccio — Giri in centro (Ragusa 3D)</title>
+<title>Micheluccio — L'ultimo centauro di Ragusa</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f12;
@@ -31,6 +31,9 @@
   @keyframes pulse { 50% { opacity: .35; } }
   #overlay-msg { margin-top: 14px; font-size: 13px; color: #9fd3ff; }
   #overlay.hidden { opacity: 0; pointer-events: none; }
+  #toast { position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%);
+    font-size: 20px; font-weight: 700; color: #ffd60a; white-space: nowrap;
+    text-shadow: 0 2px 6px rgba(0,0,0,.8); opacity: 0; transition: opacity .5s; }
 </style>
 </head>
 <body>
@@ -42,8 +45,10 @@
     W/↑ accelera · S/↓ frena<br>
     A/D sterza · SPAZIO freno a mano<br>
     C camera · M audio · R riparti<br>
+    <span style="opacity:.85; color:#ffd60a">rampe bianche → conquista i monumenti!</span><br>
     <span style="opacity:.6">mappa © OpenStreetMap contributors</span>
   </div>
+  <div id="toast"></div>
 </div>
 <div id="overlay">
   <h1>MICHELUCCIO</h1>

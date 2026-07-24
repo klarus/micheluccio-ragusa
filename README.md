@@ -1,9 +1,16 @@
 # Micheluccio — Giri in centro (Ragusa 3D)
 
-Prototipo di videogioco 3D che gira nel browser: **Micheluccio**, calvo e con giubbotto
-Ducati rosso, gira in moto per il centro di **Ragusa** (Ragusa Superiore + Ibla).
+Prototipo di videogioco 3D che gira nel browser: **Micheluccio** — calvo, occhiali neri,
+pizzetto grigio e blazer blu navy, *l'ultimo centauro di Ragusa* — gira in sella a una
+Ducati gialla per il centro di **Ragusa** (Ragusa Superiore + Ibla).
 La città — vie, sagome e altezze degli edifici, piazze — è ricostruita dai dati reali di
-**OpenStreetMap** (9.279 edifici, 1.216 strade, 11 piazze).
+**OpenStreetMap** (10.007 edifici, 1.439 strade, 15 piazze).
+
+**Monumenti da scalare**: i monumenti veri della città (Duomo di San Giorgio, Cattedrale
+di San Giovanni, Palazzo Cosentini, Santa Maria delle Scale…) sono segnalati da colonne
+di luce dorate, dal nome fluttuante e dai pallini sulla minimappa. Accanto a ciascuno c'è
+una **rampa bianca**: prendila in velocità, sali sul tetto e conquista il monumento.
+Attento al bordo quando scendi.
 
 ## Avvio
 

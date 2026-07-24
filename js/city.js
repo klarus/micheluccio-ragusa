@@ -39,6 +39,29 @@ function makeAccumulator() {
   };
 }
 
+// punto interno al poligono: baricentro se cade dentro, altrimenti scansione a griglia
+// (il baricentro dei poligoni concavi — cortili, edifici a L — può cadere fuori)
+function interiorPoint(p) {
+  const n = p.length / 2;
+  let cx = 0, cz = 0, minx = Infinity, minz = Infinity, maxx = -Infinity, maxz = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const X = p[2 * i], Z = p[2 * i + 1];
+    cx += X; cz += Z;
+    if (X < minx) minx = X;
+    if (X > maxx) maxx = X;
+    if (Z < minz) minz = Z;
+    if (Z > maxz) maxz = Z;
+  }
+  cx /= n; cz /= n;
+  if (insidePoly(p, cx, cz)) return [cx, cz];
+  for (let gx = minx + 0.8; gx < maxx; gx += 1.5) {
+    for (let gz = minz + 0.8; gz < maxz; gz += 1.5) {
+      if (insidePoly(p, gx, gz)) return [gx, gz];
+    }
+  }
+  return [cx, cz];
+}
+
 // Edificio = prisma: pareti laterali + tetto triangolato. b = [h, x1, z1, x2, z2, ...]
 function addBuilding(acc, b, wallColors, roofColors, idx) {
   const h = b[0];
@@ -46,9 +69,7 @@ function addBuilding(acc, b, wallColors, roofColors, idx) {
   const n = poly.length / 2;
   if (n < 3) return;
 
-  let cx = 0, cz = 0;
-  for (let i = 0; i < n; i++) { cx += poly[2 * i]; cz += poly[2 * i + 1]; }
-  cx /= n; cz /= n;
+  const [cx, cz] = interiorPoint(poly);
 
   const wall = wallColors[idx % wallColors.length];
   const roof = roofColors[idx % roofColors.length];
@@ -132,7 +153,7 @@ export function makeGeoConverter(center) {
   return (lat, lon) => [(lon - lon0) * k, -(lat - lat0) * 111320];
 }
 
-function insidePoly(p, x, z) {
+export function insidePoly(p, x, z) {
   let inside = false;
   const n = p.length / 2;
   for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -157,7 +178,7 @@ export class Colliders {
         if (poly[i + 1] < minz) minz = poly[i + 1];
         if (poly[i + 1] > maxz) maxz = poly[i + 1];
       }
-      const rec = { poly, minx, minz, maxx, maxz };
+      const rec = { poly, minx, minz, maxx, maxz, h: b[0] };
       for (let cx = Math.floor((minx - 2) / cell); cx <= Math.floor((maxx + 2) / cell); cx++) {
         for (let cz = Math.floor((minz - 2) / cell); cz <= Math.floor((maxz + 2) / cell); cz++) {
           const k = (cx + 4096) * 8192 + (cz + 4096);
@@ -169,7 +190,7 @@ export class Colliders {
     }
   }
 
-  resolve(x, z, r) {
+  resolve(x, z, r, y = 0) {
     let hit = false;
     for (let pass = 0; pass < 2; pass++) {
       const cx = Math.floor(x / this.cell), cz = Math.floor(z / this.cell);
@@ -178,6 +199,7 @@ export class Colliders {
           const arr = this.grid.get((ix + 4096) * 8192 + (iz + 4096));
           if (!arr) continue;
           for (const rec of arr) {
+            if (rec.h <= y + 0.5) continue; // sopra il tetto: niente collisione
             if (x < rec.minx - r || x > rec.maxx + r || z < rec.minz - r || z > rec.maxz + r) continue;
             const p = rec.poly, n = p.length / 2;
             let best = Infinity, bx = 0, bz = 0;
@@ -226,6 +248,90 @@ export function nearestRoadPoint(roads, x, z) {
   return { x: bx, z: bz, angle, dist: Math.sqrt(best) };
 }
 
+// ---- monumenti: rampa d'accesso al tetto e quota del terreno
+
+// Cuneo (rampa): da (x0,z0) a terra, sale lungo (dx,dz) per L, larga W, alta h in cima.
+function addRamp(acc, r, c) {
+  const px = -r.dz, pz = r.dx; // perpendicolare
+  const ax = r.x0 - (px * r.W) / 2, az = r.z0 - (pz * r.W) / 2; // basso sx
+  const bx = r.x0 + (px * r.W) / 2, bz = r.z0 + (pz * r.W) / 2; // basso dx
+  const cx = r.x0 + r.dx * r.L - (px * r.W) / 2, cz = r.z0 + r.dz * r.L - (pz * r.W) / 2; // alto sx
+  const ex = r.x0 + r.dx * r.L + (px * r.W) / 2, ez = r.z0 + r.dz * r.L + (pz * r.W) / 2; // alto dx
+  // piano inclinato
+  acc.tri(ax, 0, az, bx, 0, bz, ex, r.h, ez, 0, 1, 0, c);
+  acc.tri(ax, 0, az, ex, r.h, ez, cx, r.h, cz, 0, 1, 0, c);
+  // fiancate laterali
+  acc.tri(ax, 0, az, cx, r.h, cz, cx, 0, cz, -px, 0, -pz, c);
+  acc.tri(bx, 0, bz, ex, r.h, ez, ex, 0, ez, px, 0, pz, c);
+  // parete di fondo (in cima)
+  acc.tri(cx, 0, cz, ex, 0, ez, ex, r.h, ez, r.dx, 0, r.dz, c);
+  acc.tri(cx, 0, cz, ex, r.h, ez, cx, r.h, cz, r.dx, 0, r.dz, c);
+}
+
+// Per ogni monumento: baricentro, AABB e la rampa sul lato con più spazio libero.
+export function makeMonuments(data, colliders) {
+  const monuments = [];
+  for (const m of data.monuments || []) {
+    const p = m.p, n = p.length / 2;
+    let minx = Infinity, minz = Infinity, maxx = -Infinity, maxz = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const X = p[2 * i], Z = p[2 * i + 1];
+      if (X < minx) minx = X;
+      if (X > maxx) maxx = X;
+      if (Z < minz) minz = Z;
+      if (Z > maxz) maxz = Z;
+    }
+    const acx = (minx + maxx) / 2, acz = (minz + maxz) / 2;
+    const sides = [
+      { ex: maxx, ez: acz, dx: 1, dz: 0, len: maxz - minz },  // est
+      { ex: minx, ez: acz, dx: -1, dz: 0, len: maxz - minz }, // ovest
+      { ex: acx, ez: maxz, dx: 0, dz: 1, len: maxx - minx },  // sud
+      { ex: acx, ez: minz, dx: 0, dz: -1, len: maxx - minx }, // nord
+    ];
+    let best = sides[0], bestClear = -1;
+    for (const s of sides) {
+      let clear = 20;
+      for (let d = 3; d <= 18; d += 3) {
+        if (colliders.resolve(s.ex + s.dx * d, s.ez + s.dz * d, 1.4).hit) { clear = d - 3; break; }
+      }
+      if (clear > bestClear) { bestClear = clear; best = s; }
+    }
+    const L = Math.max(6, Math.min(18, m.h * 1.3)) + 0.8; // la cima entra un po' nell'edificio
+    const W = Math.max(3, Math.min(6, best.len * 0.9));
+    const [icx, icz] = interiorPoint(p);
+    monuments.push({
+      name: m.n, h: m.h, p, cx: icx, cz: icz,
+      ramp: {
+        x0: best.ex + best.dx * (L - 0.8), z0: best.ez + best.dz * (L - 0.8),
+        dx: -best.dx, dz: -best.dz, L, W, h: m.h,
+      },
+    });
+  }
+  return monuments;
+}
+
+// Quota del terreno in (x,z) dato che la moto è a quota y: strade a 0,
+// piano inclinato sulle rampe, tetto sui monumenti (se sei già quasi su).
+export function makeGround(monuments) {
+  return (x, z, y) => {
+    let g = 0;
+    for (const m of monuments) {
+      const r = m.ramp;
+      const rx = x - r.x0, rz = z - r.z0;
+      const s = rx * r.dx + rz * r.dz;
+      if (s >= 0 && s <= r.L) {
+        const t = rx * -r.dz + rz * r.dx;
+        if (Math.abs(t) <= r.W / 2) {
+          const hh = r.h * (s / r.L);
+          if (hh > g) g = hh;
+        }
+      }
+      if (y > m.h - 1.2 && insidePoly(m.p, x, z) && m.h > g) g = m.h;
+    }
+    return g;
+  };
+}
+
 export function buildCity(data) {
   const group = new THREE.Group();
   const wallColors = WALLS.map(rgb);
@@ -253,13 +359,23 @@ export function buildCity(data) {
   data.plazas.forEach((p, i) => addPlaza(pAcc, p, i));
   group.add(pAcc.toMesh(mat()));
 
+  const colliders = new Colliders(data.buildings);
+  const monuments = makeMonuments(data, colliders);
+  const wAcc = makeAccumulator();
+  const marble = rgb(0xf2ede0);
+  monuments.forEach((m) => addRamp(wAcc, m.ramp, marble));
+  group.add(wAcc.toMesh(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 })));
+
   return {
     group,
-    colliders: new Colliders(data.buildings),
+    colliders,
+    monuments,
+    ground: makeGround(monuments),
     counts: {
       buildings: data.buildings.length,
       roads: data.roads.length,
       plazas: data.plazas.length,
+      monuments: monuments.length,
     },
   };
 }

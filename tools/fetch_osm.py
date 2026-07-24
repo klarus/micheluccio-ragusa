@@ -11,7 +11,13 @@ import sys
 import urllib.parse
 import urllib.request
 
-BBOX = (36.918, 14.717, 36.936, 14.741)  # S, W, N, E — Ragusa Superiore + Ibla
+BBOX = (36.918, 14.717, 36.936, 14.748)  # S, W, N, E — Ragusa Superiore + Ibla (fino al Duomo)
+
+# Monumenti da includere anche se in OSM non sono taggati sulla way:
+# (nome, lat, lon) — abbinato all'edificio che contiene il punto (o al più vicino)
+EXTRA_MONUMENTS = [
+    ("Duomo di San Giorgio", 36.926547, 14.742300),
+]
 MIRRORS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
@@ -21,6 +27,9 @@ QUERY = """[out:json][timeout:180];
 (
   way["building"]({s},{w},{n},{e});
   way["highway"]({s},{w},{n},{e});
+  way["historic"]["name"]["building"]({s},{w},{n},{e});
+  way["tourism"="attraction"]["name"]["building"]({s},{w},{n},{e});
+  way["amenity"="place_of_worship"]["name"]["building"]({s},{w},{n},{e});
 );
 out geom;"""
 
@@ -85,6 +94,31 @@ def building_height(tags, wid):
     return 6.5 + (wid % 4) * 2.2  # 2-5 piani, deterministico
 
 
+def point_in_poly(flat, x, z):
+    inside = False
+    n = len(flat) // 2
+    j = n - 1
+    for i in range(n):
+        xi, zi = flat[2 * i], flat[2 * i + 1]
+        xj, zj = flat[2 * j], flat[2 * j + 1]
+        if (zi > z) != (zj > z) and x < (xj - xi) * (z - zi) / (zj - zi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def is_monument(tags):
+    """Edifici 'monumento': chiese, attrazioni turistiche, edifici storici con nome."""
+    if "name" not in tags or "building" not in tags:
+        return False
+    return (
+        "historic" in tags
+        or tags.get("tourism") == "attraction"
+        or tags.get("amenity") == "place_of_worship"
+        or tags.get("building") in ("church", "cathedral", "basilica", "chapel")
+    )
+
+
 def fetch():
     q = QUERY.format(s=S, w=W, n=N, e=E)
     body = urllib.parse.urlencode({"data": q}).encode()
@@ -106,7 +140,7 @@ def main():
     elements = raw.get("elements", [])
     print(f"elementi ricevuti: {len(elements)}")
 
-    buildings, roads, plazas = [], [], []
+    buildings, roads, plazas, monuments = [], [], [], []
     for el in elements:
         if el.get("type") != "way" or "geometry" not in el:
             continue
@@ -119,6 +153,13 @@ def main():
                 h = round(building_height(tags, el["id"]), 1)
                 flat = [round(v, 1) for p in poly for v in p]
                 buildings.append([h] + flat)
+                if is_monument(tags):
+                    prio = (
+                        0 if "historic" in tags
+                        else 1 if tags.get("tourism") == "attraction"
+                        else 2
+                    )
+                    monuments.append({"n": tags["name"], "h": h, "p": flat, "prio": prio})
         elif "highway" in tags:
             hw = tags["highway"]
             if hw in SKIP_HIGHWAY:
@@ -134,19 +175,52 @@ def main():
                     flat = [round(v, 1) for p in line for v in p]
                     roads.append([width] + flat)
 
+    # monumenti "manuali": abbinati all'edificio che contiene il punto noto
+    for name, lat, lon in EXTRA_MONUMENTS:
+        existing = next((m for m in monuments if m["n"] == name), None)
+        if existing is not None:
+            existing["prio"] = 0  # priorità massima: mai tagliato fuori
+            continue
+        x, z = to_local(lat, lon)
+        best = None
+        for b in buildings:
+            if point_in_poly(b[1:], x, z):
+                best = b
+                break
+        if best is None:  # fallback: baricentro più vicino entro 45 m
+            dist_best = 45.0
+            for b in buildings:
+                poly = b[1:]
+                n = len(poly) // 2
+                bx = sum(poly[0::2]) / n
+                bz = sum(poly[1::2]) / n
+                d = math.hypot(bx - x, bz - z)
+                if d < dist_best:
+                    dist_best, best = d, b
+        if best is not None:
+            monuments.append({"n": name, "h": best[0], "p": best[1:], "prio": 0})
+        else:
+            print(f"  ! {name}: nessun edificio trovato vicino a ({lat}, {lon})")
+
+    monuments.sort(key=lambda m: (m["prio"], m["n"]))
+    monuments = [{"n": m["n"], "h": m["h"], "p": m["p"]} for m in monuments[:16]]
+
     city = {
         "center": [LAT0, LON0],
         "bbox": [S, W, N, E],
         "buildings": buildings,
         "roads": roads,
         "plazas": plazas,
+        "monuments": monuments,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:
         json.dump(city, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(OUT) / 1024
-    print(f"edifici: {len(buildings)}  strade: {len(roads)}  piazze: {len(plazas)}")
+    print(f"edifici: {len(buildings)}  strade: {len(roads)}  piazze: {len(plazas)}  monumenti: {len(monuments)}")
+    for m in monuments:
+        print(f"  - {m['n']} ({m['h']}m)")
     print(f"scritto {OUT} ({size_kb:.0f} KB)")
 
 

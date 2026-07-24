@@ -1,6 +1,6 @@
 // js/main.js — bootstrap del gioco: scena, fisica arcade, camera, HUD, minimappa, audio.
 import * as THREE from '../vendor/three.module.js';
-import { buildCity, nearestRoadPoint, makeGeoConverter } from './city.js';
+import { buildCity, nearestRoadPoint, makeGeoConverter, insidePoly } from './city.js';
 import { buildBike } from './bike.js';
 
 const SPAWN = { lat: 36.9268, lon: 14.7232 }; // Cattedrale di San Giovanni, Ragusa
@@ -48,10 +48,16 @@ window.addEventListener('resize', () => {
 });
 
 // ---------- stato
-const state = { ready: false, started: false, camMode: 0, muted: false, v: 0, heading: 0, steer: 0 };
+const state = {
+  ready: false, started: false, camMode: 0, muted: false,
+  v: 0, heading: 0, steer: 0, vy: 0,
+};
 const bikePos = new THREE.Vector3();
 const spawnPoint = { x: 0, z: 0, angle: 0 };
 let colliders = null;
+let monuments = [];
+let ground = () => 0;
+const conquered = new Set();
 
 // ---------- moto + ombra finta
 const bike = buildBike();
@@ -74,7 +80,8 @@ function makeBlob() {
   m.position.y = 0.02;
   return m;
 }
-bike.group.add(makeBlob());
+const blob = makeBlob();
+bike.group.add(blob);
 
 // ---------- HUD
 const speedEl = document.querySelector('#speed .num');
@@ -82,7 +89,49 @@ const overlay = document.getElementById('overlay');
 const overlayMsg = document.getElementById('overlay-msg');
 const mapCanvas = document.getElementById('minimap');
 const mapCtx = mapCanvas.getContext('2d');
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
 let mapBase = null, mapTr = null;
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, 3200);
+}
+
+// marker dei monumenti: colonna di luce dorata + nome fluttuante
+function addMonumentMarkers(list) {
+  for (const m of list) {
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.8, 0.8, 30, 12, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffd60a, transparent: true, opacity: 0.16,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      })
+    );
+    beam.position.set(m.cx, m.h + 15, m.cz);
+    scene.add(beam);
+
+    const cv = document.createElement('canvas');
+    cv.width = 512; cv.height = 96;
+    const c = cv.getContext('2d');
+    c.font = 'bold 42px system-ui, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.lineWidth = 8;
+    c.strokeStyle = 'rgba(0,0,0,0.75)';
+    c.strokeText(m.name, 256, 50);
+    c.fillStyle = '#ffd60a';
+    c.fillText(m.name, 256, 50);
+    const sp = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, depthWrite: false })
+    );
+    sp.scale.set(17, 3.2, 1);
+    sp.position.set(m.cx, m.h + 5.5, m.cz);
+    scene.add(sp);
+  }
+}
 
 function buildMinimap(data) {
   const S = 512;
@@ -128,6 +177,17 @@ function buildMinimap(data) {
       if (i === 1) c.moveTo(X, Y); else c.lineTo(X, Y);
     }
     c.stroke();
+  }
+  // monumenti: pallini dorati
+  c.fillStyle = '#ffd60a';
+  for (const m of data.monuments || []) {
+    let mx = 0, mz = 0;
+    const n = m.p.length / 2;
+    for (let i = 0; i < n; i++) { mx += m.p[2 * i]; mz += m.p[2 * i + 1]; }
+    const [X, Y] = px(mx / n, mz / n);
+    c.beginPath();
+    c.arc(X, Y, 3.5, 0, 7);
+    c.fill();
   }
   mapBase = cv;
 }
@@ -201,6 +261,7 @@ function respawn() {
   state.heading = spawnPoint.angle;
   state.v = 0;
   state.steer = 0;
+  state.vy = 0;
 }
 
 // ---------- caricamento città
@@ -215,6 +276,9 @@ fetch('data/city.json')
     const city = buildCity(data);
     scene.add(city.group);
     colliders = city.colliders;
+    monuments = city.monuments;
+    ground = city.ground;
+    addMonumentMarkers(monuments);
     const conv = makeGeoConverter(data.center);
     const [sx, sz] = conv(SPAWN.lat, SPAWN.lon);
     const sp = nearestRoadPoint(data.roads, sx, sz);
@@ -224,7 +288,9 @@ fetch('data/city.json')
     camera.lookAt(sp.x, 1.2, sp.z);
     buildMinimap(data);
     state.ready = true;
-    overlayMsg.textContent = `${city.counts.buildings} edifici reali caricati — buon giro, Micheluccio!`;
+    overlayMsg.textContent =
+      `${city.counts.buildings} edifici reali caricati — ` +
+      `${city.counts.monuments} monumenti da scalare. Buon giro, Micheluccio!`;
   })
   .catch((err) => {
     overlayMsg.textContent =
@@ -252,17 +318,47 @@ function update(dt) {
   state.heading += state.steer * 2.3 * grip * (hb ? 1.45 : 1) * dt;
 
   const fx = Math.sin(state.heading), fz = Math.cos(state.heading);
+
   // a 200+ km/h un frame vale oltre un metro: sotto-passi per non trapassare i muri
   const steps = Math.max(1, Math.ceil((state.v * dt) / 0.8));
   for (let s = 0; s < steps; s++) {
     bikePos.x += (fx * state.v * dt) / steps;
     bikePos.z += (fz * state.v * dt) / steps;
     if (colliders) {
-      const res = colliders.resolve(bikePos.x, bikePos.z, 1.05);
+      const res = colliders.resolve(bikePos.x, bikePos.z, 1.05, bikePos.y);
       if (res.hit) {
         bikePos.x = res.x;
         bikePos.z = res.z;
         state.v *= 0.55;
+      }
+    }
+  }
+
+  // quota: rampe, tetti dei monumenti, cadute
+  const g = ground(bikePos.x, bikePos.z, bikePos.y);
+  if (bikePos.y > g + 0.02) {
+    state.vy -= 22 * dt;
+    bikePos.y += state.vy * dt;
+    if (bikePos.y <= g) {
+      bikePos.y = g;
+      state.vy = 0;
+    }
+  } else {
+    bikePos.y = g;
+    state.vy = 0;
+  }
+  blob.position.y = g + 0.03 - bikePos.y;
+
+  // conquista dei monumenti
+  if (state.vy === 0 && bikePos.y > 0.5) {
+    for (const m of monuments) {
+      if (
+        bikePos.y > m.h - 1.2 &&
+        !conquered.has(m.name) &&
+        insidePoly(m.p, bikePos.x, bikePos.z)
+      ) {
+        conquered.add(m.name);
+        toast(`🏛 ${m.name} conquistato! (${conquered.size}/${monuments.length})`);
       }
     }
   }
@@ -283,16 +379,16 @@ function update(dt) {
   const k = 1 - Math.exp(-6 * dt);
   if (state.camMode === 2) {
     // onboard: dagli occhi di Micheluccio, con un filo di rollio in piega
-    camera.position.set(bikePos.x - fx * 0.1, 1.42, bikePos.z - fz * 0.1);
-    camera.lookAt(bikePos.x + fx * 25, 1.25, bikePos.z + fz * 25);
+    camera.position.set(bikePos.x - fx * 0.1, bikePos.y + 1.42, bikePos.z - fz * 0.1);
+    camera.lookAt(bikePos.x + fx * 25, bikePos.y + 1.25, bikePos.z + fz * 25);
     camera.rotateZ(bike.lean.rotation.z * 0.45);
   } else {
     const [d, h, ahead] = state.camMode === 0 ? [6.5, 2.4, 5] : [11, 4.6, 7];
     const dx = bikePos.x - fx * d, dz = bikePos.z - fz * d;
     camera.position.x += (dx - camera.position.x) * k;
-    camera.position.y += (h - camera.position.y) * k;
+    camera.position.y += (bikePos.y + h - camera.position.y) * k;
     camera.position.z += (dz - camera.position.z) * k;
-    camera.lookAt(bikePos.x + fx * ahead, 1.2, bikePos.z + fz * ahead);
+    camera.lookAt(bikePos.x + fx * ahead, bikePos.y + 1.2, bikePos.z + fz * ahead);
   }
 
   speedEl.textContent = Math.round(state.v * 3.6);
