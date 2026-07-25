@@ -12,28 +12,32 @@ function rgb(hex) {
 }
 
 // Accumulatore di triangoli non indicizzati: normale piatta per faccia,
-// colore per vertice. `wantN` orienta il winding in automatico.
+// colore per vertice, UV opzionali. `wantN` orienta il winding in automatico.
 function makeAccumulator() {
-  const pos = [], nor = [], col = [];
+  const pos = [], nor = [], col = [], uv = [];
   return {
-    tri(ax, ay, az, bx, by, bz, cx, cy, cz, wnx, wny, wnz, c) {
+    tri(ax, ay, az, bx, by, bz, cx, cy, cz, wnx, wny, wnz, c, uvs = null) {
       const ux = bx - ax, uy = by - ay, uz = bz - az;
       const vx = cx - ax, vy = cy - ay, vz = cz - az;
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       if (nx * wnx + ny * wny + nz * wnz < 0) {
         [bx, cx] = [cx, bx]; [by, cy] = [cy, by]; [bz, cz] = [cz, bz];
         nx = -nx; ny = -ny; nz = -nz;
+        if (uvs) [uvs[1], uvs[2]] = [uvs[2], uvs[1]];
       }
       const len = Math.hypot(nx, ny, nz) || 1;
       nx /= len; ny /= len; nz /= len;
       pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
       for (let i = 0; i < 3; i++) { nor.push(nx, ny, nz); col.push(c.r, c.g, c.b); }
+      if (uvs) uv.push(uvs[0][0], uvs[0][1], uvs[1][0], uvs[1][1], uvs[2][0], uvs[2][1]);
+      else uv.push(0, 0, 0, 0, 0, 0);
     },
     toMesh(material) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
       return new THREE.Mesh(g, material);
     },
   };
@@ -62,40 +66,68 @@ function interiorPoint(p) {
   return [cx, cz];
 }
 
-// Edificio = prisma: pareti laterali + tetto triangolato. b = [h, x1, z1, x2, z2, ...]
+const TILE_M = 6; // metri coperti da una ripetizione della texture delle finestre
+
+// Edificio = prisma: pareti laterali (UV per la texture finestre) + tetto con
+// fascia di parapetto. b = [h, x1, z1, x2, z2, ...]
 function addBuilding(acc, b, wallColors, roofColors, idx) {
   const h = b[0];
-  const poly = b.slice(1);
+  // toglie punti consecutivi (quasi) duplicati: l'arrotondamento del fetch può crearne
+  const raw = b.slice(1);
+  const poly = [];
+  for (let i = 0; i < raw.length; i += 2) {
+    const k = poly.length;
+    if (k === 0 || Math.hypot(raw[i] - poly[k - 2], raw[i + 1] - poly[k - 1]) > 0.05) {
+      poly.push(raw[i], raw[i + 1]);
+    }
+  }
   const n = poly.length / 2;
   if (n < 3) return;
 
   const [cx, cz] = interiorPoint(poly);
-
   const wall = wallColors[idx % wallColors.length];
   const roof = roofColors[idx % roofColors.length];
+  const band = { r: wall.r * 0.82, g: wall.g * 0.82, b: wall.b * 0.82 };
 
+  let u = 0;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const x1 = poly[2 * i], z1 = poly[2 * i + 1];
     const x2 = poly[2 * j], z2 = poly[2 * j + 1];
-    // normale orizzontale verso l'esterno (test contro il baricentro)
+    // normale orizzontale verso l'esterno (test contro un punto interno)
     let nx = z2 - z1, nz = -(x2 - x1);
     const mx = (x1 + x2) / 2 - cx, mz = (z1 + z2) / 2 - cz;
     if (nx * mx + nz * mz < 0) { nx = -nx; nz = -nz; }
     const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
-    acc.tri(x1, 0, z1, x2, 0, z2, x2, h, z2, nx, 0, nz, wall);
-    acc.tri(x1, 0, z1, x2, h, z2, x1, h, z2, nx, 0, nz, wall);
+    const edge = Math.hypot(x2 - x1, z2 - z1);
+    const u0 = u / TILE_M, u1 = (u + edge) / TILE_M, v1 = h / TILE_M;
+    acc.tri(x1, 0, z1, x2, 0, z2, x2, h, z2, nx, 0, nz, wall, [[u0, 0], [u1, 0], [u1, v1]]);
+    acc.tri(x1, 0, z1, x2, h, z2, x1, h, z2, nx, 0, nz, wall, [[u0, 0], [u1, v1], [u0, v1]]);
+    u += edge;
   }
 
   const contour = [];
   for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(poly[2 * i], poly[2 * i + 1]));
+  // fascia di parapetto: anello tra il bordo e il poligono rientrato al 4%
+  const inset = contour.map((v) => new THREE.Vector2(v.x + (cx - v.x) * 0.04, v.y + (cz - v.y) * 0.04));
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    acc.tri(
+      contour[i].x, h, contour[i].y, contour[j].x, h, contour[j].y, inset[j].x, h, inset[j].y,
+      0, 1, 0, band
+    );
+    acc.tri(
+      contour[i].x, h, contour[i].y, inset[j].x, h, inset[j].y, inset[i].x, h, inset[i].y,
+      0, 1, 0, band
+    );
+  }
   let tris = [];
-  try { tris = THREE.ShapeUtils.triangulateShape(contour, []); } catch { tris = []; }
+  try { tris = THREE.ShapeUtils.triangulateShape(inset, []); } catch { tris = []; }
   for (const [a, b2, c2] of tris) {
     acc.tri(
-      contour[a].x, h, contour[a].y,
-      contour[b2].x, h, contour[b2].y,
-      contour[c2].x, h, contour[c2].y,
+      inset[a].x, h, inset[a].y,
+      inset[b2].x, h, inset[b2].y,
+      inset[c2].x, h, inset[c2].y,
       0, 1, 0, roof
     );
   }
@@ -107,7 +139,7 @@ function addRoad(acc, r, idx) {
   const pts = r.slice(1);
   const n = pts.length / 2;
   if (n < 2) return;
-  const shade = 0.3 + (idx % 5) * 0.015;
+  const shade = 0.27 + (idx % 5) * 0.015;
   const c = { r: shade, g: shade, b: shade + 0.02 };
   const Y = 0.06;
 
@@ -332,14 +364,14 @@ export function makeGround(monuments) {
   };
 }
 
-export function buildCity(data) {
+export function buildCity(data, opts = {}) {
   const group = new THREE.Group();
   const wallColors = WALLS.map(rgb);
   const roofColors = ROOFS.map(rgb);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4600, 4600),
-    new THREE.MeshStandardMaterial({ color: 0x9a968e, roughness: 1 })
+    new THREE.MeshStandardMaterial({ color: 0xa5a196, roughness: 1 })
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.02;
@@ -349,7 +381,12 @@ export function buildCity(data) {
 
   const bAcc = makeAccumulator();
   data.buildings.forEach((b, i) => addBuilding(bAcc, b, wallColors, roofColors, i));
-  group.add(bAcc.toMesh(mat()));
+  const bMat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.95,
+    ...(opts.wallTexture ? { map: opts.wallTexture } : {}),
+  });
+  group.add(bAcc.toMesh(bMat));
 
   const rAcc = makeAccumulator();
   data.roads.forEach((r, i) => addRoad(rAcc, r, i));

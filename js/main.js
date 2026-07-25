@@ -3,13 +3,22 @@ import * as THREE from '../vendor/three.module.js';
 import { buildCity, nearestRoadPoint, makeGeoConverter, insidePoly } from './city.js';
 import { buildBike } from './bike.js';
 
-const SPAWN = { lat: 36.9268, lon: 14.7232 }; // Cattedrale di San Giovanni, Ragusa
+// parametri URL per screenshot di debug: ?shot (avvio automatico) &lat=&lon= (posizione)
+const QS = new URLSearchParams(location.search);
+const SPAWN = {
+  lat: parseFloat(QS.get('lat')) || 36.9268,  // Cattedrale di San Giovanni, Ragusa
+  lon: parseFloat(QS.get('lon')) || 14.7232,
+};
 const MAX_SPEED = 72; // m/s (~260 km/h): è pur sempre una Ducati
 
 // ---------- renderer e scena
+const RENDER_OPTS = {
+  antialias: !QS.has('shot'),
+  preserveDrawingBuffer: QS.has('shot'), // necessario per leggere i pixel negli screenshot
+};
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer = new THREE.WebGLRenderer(RENDER_OPTS);
 } catch (e1) {
   try {
     renderer = new THREE.WebGL1Renderer({ antialias: true });
@@ -36,8 +45,8 @@ const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerH
 camera.position.set(0, 120, 220);
 camera.lookAt(0, 0, 0);
 
-scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x8a7a5a, 0.85));
-const sun = new THREE.DirectionalLight(0xfff1d6, 1.3);
+scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x9a8a70, 1.0));
+const sun = new THREE.DirectionalLight(0xfff1d6, 1.45);
 sun.position.set(400, 600, 250);
 scene.add(sun);
 
@@ -98,6 +107,56 @@ function toast(msg) {
   toastEl.style.opacity = 1;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, 3200);
+}
+
+// texture procedurale dei prospetti: pietra chiara + finestre ad arco con balconcino
+function makeWallTexture() {
+  const T = 256; // una tile copre 6 m x 6 m (due piani)
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = T;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#f5f1e6';
+  c.fillRect(0, 0, T, T);
+  for (let i = 0; i < 300; i++) { // grana della pietra
+    c.fillStyle = `rgba(120,110,90,${Math.random() * 0.06})`;
+    c.fillRect(Math.random() * T, Math.random() * T, 2, 2);
+  }
+  // cornicioni fra i piani
+  for (const y of [0, 128]) {
+    c.fillStyle = 'rgba(0,0,0,0.10)';
+    c.fillRect(0, y, T, 2);
+    c.fillStyle = 'rgba(255,255,255,0.35)';
+    c.fillRect(0, y + 2, T, 1);
+  }
+  // finestre: 2 per piano (y=64 piano alto, y=192 piano terra — la texture è flipY)
+  for (const wy of [64, 192]) {
+    for (const wx of [64, 192]) {
+      c.fillStyle = '#ddd6c4'; // telaio + davanzale
+      c.fillRect(wx - 21, wy - 34, 42, 72);
+      c.fillRect(wx - 25, wy + 38, 50, 5);
+      c.fillStyle = '#2e3542'; // vetro con arco
+      c.beginPath();
+      c.moveTo(wx - 16, wy + 36);
+      c.lineTo(wx - 16, wy - 20);
+      c.arc(wx, wy - 20, 16, Math.PI, 0);
+      c.lineTo(wx + 16, wy + 36);
+      c.closePath();
+      c.fill();
+      c.strokeStyle = 'rgba(25,25,25,0.9)'; // balconcino
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(wx - 24, wy + 44); c.lineTo(wx + 24, wy + 44);
+      for (const bx of [-18, -6, 6, 18]) {
+        c.moveTo(wx + bx, wy + 44); c.lineTo(wx + bx, wy + 56);
+      }
+      c.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 // marker dei monumenti: colonna di luce dorata + nome fluttuante
@@ -273,7 +332,7 @@ fetch('data/city.json')
   .then(async (data) => {
     overlayMsg.textContent = 'dati scaricati, costruisco la città…';
     await new Promise((r) => setTimeout(r, 30)); // lascia comparire il messaggio
-    const city = buildCity(data);
+    const city = buildCity(data, { wallTexture: makeWallTexture() });
     scene.add(city.group);
     colliders = city.colliders;
     monuments = city.monuments;
@@ -288,6 +347,10 @@ fetch('data/city.json')
     camera.lookAt(sp.x, 1.2, sp.z);
     buildMinimap(data);
     state.ready = true;
+    if (QS.has('shot')) {
+      state.camMode = 1;
+      firstStart();
+    }
     overlayMsg.textContent =
       `${city.counts.buildings} edifici reali caricati — ` +
       `${city.counts.monuments} monumenti da scalare. Buon giro, Micheluccio!`;
@@ -398,10 +461,19 @@ function update(dt) {
 
 // ---------- loop
 const clock = new THREE.Clock();
+let shotFrames = 0;
 function animate() {
+  if (QS.has('shot') && shotFrames >= 9) return; // in modalità screenshot: pochi frame e stop
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   if (state.started) update(dt);
   renderer.render(scene, camera);
+  if (QS.has('shot') && ++shotFrames === 9) {
+    // esporta il frame renderizzato nel DOM (recuperato dagli screenshot headless)
+    const img = document.createElement('img');
+    img.id = 'shotout';
+    img.src = renderer.domElement.toDataURL('image/png');
+    document.body.appendChild(img);
+  }
 }
 animate();
